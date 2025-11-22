@@ -6,71 +6,56 @@ import os
 from pathlib import Path
 from typing import List, Set, Tuple
 
-import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 
 
-# Placeholder helper for future LLM integration.
-def call_llm(text: str) -> str:
-    """Call a self-hosted Mistral LLM.
+def call_llm(policy_text: str, control_text: str) -> float:
+    """Call a self-hosted LLM to score semantic similarity.
 
-    This function is intentionally left as a placeholder. Replace the TODO section
-    with logic to call your self-hosted Mistral deployment with the desired model
-    and parameters.
+    The endpoint must be provided via the ``LLM_ENDPOINT`` environment variable and
+    is expected to return JSON containing a numeric score, either as ``match_percentage``
+    (0-100) or ``score`` (0-1 or 0-100). The function normalizes the value to a
+    percentage between 0 and 100.
     """
 
-    # TODO: Implement call to self-hosted Mistral LLM endpoint.
-    raise NotImplementedError("call_llm is not implemented. Provide your Mistral endpoint logic here.")
+    endpoint = os.getenv("LLM_ENDPOINT")
+    if not endpoint:
+        raise RuntimeError("LLM_ENDPOINT environment variable is required for LLM calls.")
 
+    response = requests.post(
+        endpoint,
+        json={"policy_text": policy_text, "control_text": control_text},
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
 
-def _require_mistral_client():
+    for key in ("match_percentage", "score", "matching_score"):
+        if key in data:
+            raw_score = data[key]
+            break
+    else:
+        raise ValueError("LLM response did not include a score field.")
+
     try:
-        from mistralai.client import MistralClient
-    except ImportError as exc:  # pragma: no cover - runtime safeguard
-        raise ImportError(
-            "mistralai package is required for embedding generation. "
-            "Install it with `pip install mistralai`."
-        ) from exc
+        score_value = float(raw_score)
+    except (TypeError, ValueError) as exc:  # pragma: no cover - runtime safeguard
+        raise ValueError("LLM score must be numeric.") from exc
 
-    return MistralClient
+    if score_value <= 1:
+        score_pct = score_value * 100
+    else:
+        score_pct = score_value
 
-
-def generate_mistral_embeddings(texts: List[str]) -> np.ndarray:
-    """Generate embeddings for a list of texts using Mistral embeddings."""
-    if not texts:
-        return np.empty((0, 0))
-
-    api_key = os.getenv("MISTRAL_API_KEY")
-    model = os.getenv("MISTRAL_EMBED_MODEL", "mistral-embed")
-    endpoint = os.getenv("MISTRAL_ENDPOINT")
-
-    if not api_key:
-        raise RuntimeError("MISTRAL_API_KEY environment variable is required for embeddings.")
-
-    MistralClient = _require_mistral_client()
-    client = MistralClient(api_key=api_key, endpoint=endpoint)
-
-    response = client.embeddings(model=model, input=texts)
-    embeddings = np.array([item.embedding for item in response.data])
-    return embeddings
-
-
-def _cosine_similarity_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Compute cosine similarity between two embedding matrices."""
-    if a.size == 0 or b.size == 0:
-        return np.zeros((len(a), len(b)))
-
-    # Normalize rows
-    a_norm = a / np.linalg.norm(a, axis=1, keepdims=True)
-    b_norm = b / np.linalg.norm(b, axis=1, keepdims=True)
-    return np.matmul(a_norm, b_norm.T)
+    return max(0.0, min(100.0, score_pct))
 
 
 def find_best_matches(
     policy_df: pd.DataFrame, control_df: pd.DataFrame, threshold: float
 ) -> Tuple[pd.DataFrame, bool]:
-    """Attach best matching control to each policy statement."""
+    """Attach best matching control to each policy statement using LLM scores."""
     required_policy_cols = {"policy", "standard_name", "statement"}
     required_control_cols = {"ID", "description", "status", "name"}
 
@@ -82,23 +67,16 @@ def find_best_matches(
         missing = required_control_cols - set(control_df.columns)
         raise ValueError(f"Control file missing columns: {', '.join(sorted(missing))}")
 
-    policy_texts = policy_df["statement"].astype(str).tolist()
-    control_texts = control_df["description"].astype(str).tolist()
-
-    policy_embeddings = generate_mistral_embeddings(policy_texts)
-    control_embeddings = generate_mistral_embeddings(control_texts)
-
-    similarity_matrix = _cosine_similarity_matrix(policy_embeddings, control_embeddings)
-
     matches = []
-    for idx, statement in enumerate(policy_df.itertuples(index=False)):
-        row_similarities = similarity_matrix[idx]
-        if row_similarities.size == 0:
-            best_idx = None
-            best_score = 0.0
-        else:
-            best_idx = int(np.argmax(row_similarities))
-            best_score = float(row_similarities[best_idx])
+    for policy_idx, policy_row in enumerate(policy_df.itertuples(index=False)):
+        best_idx = None
+        best_score = -1.0
+
+        for control_idx, control_row in enumerate(control_df.itertuples(index=False)):
+            score = call_llm(str(policy_row.statement), str(control_row.description))
+            if score > best_score:
+                best_score = score
+                best_idx = control_idx
 
         if best_idx is not None and best_score >= threshold:
             best_match = control_df.iloc[best_idx]
@@ -108,7 +86,7 @@ def find_best_matches(
                     "description": best_match.description,
                     "status": best_match.status,
                     "name": best_match.name,
-                    "match_percentage": round(best_score * 100, 2),
+                    "match_percentage": round(best_score, 2),
                 }
             )
         else:
@@ -164,16 +142,16 @@ def main():
     st.set_page_config(page_title="Policy-Control Matching", layout="wide")
     st.title("Policy to Control Matching")
     st.write(
-        "Upload policy statements and control descriptions to compute similarity using Mistral embeddings."
+        "Upload policy statements and control descriptions to compute semantic similarity using a self-hosted LLM."
     )
 
     threshold = st.slider(
-        "Similarity threshold",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.6,
-        step=0.01,
-        help="Only matches at or above this score will be retained.",
+        "Similarity threshold (%)",
+        min_value=0,
+        max_value=100,
+        value=60,
+        step=1,
+        help="Only matches at or above this percentage will be retained.",
     )
 
     col1, col2 = st.columns(2)
