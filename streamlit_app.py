@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import List, Tuple
+from pathlib import Path
+from typing import List, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -126,6 +127,39 @@ def find_best_matches(
     return merged, has_matches
 
 
+def _load_table(uploaded_file, expected_columns: Set[str], role: str) -> pd.DataFrame:
+    """Load a CSV or Excel file and validate required columns."""
+
+    ext = Path(uploaded_file.name).suffix.lower()
+    try:
+        if ext in {".xls", ".xlsx"}:
+            df = pd.read_excel(uploaded_file)
+        elif ext == ".csv":
+            try:
+                df = pd.read_csv(uploaded_file, encoding="utf-8")
+            except UnicodeDecodeError:
+                uploaded_file.seek(0)
+                try:
+                    df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
+                except UnicodeDecodeError:
+                    uploaded_file.seek(0)
+                    df = pd.read_csv(
+                        uploaded_file, encoding="latin-1", on_bad_lines="skip"
+                    )
+        else:
+            raise ValueError("Unsupported file type. Please upload CSV or Excel files.")
+    except Exception as exc:  # pragma: no cover - user feedback path
+        raise ValueError(f"Unable to read {role} file: {exc}") from exc
+
+    missing = expected_columns - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"{role} file missing columns: {', '.join(sorted(missing))}"
+        )
+
+    return df
+
+
 def main():
     st.set_page_config(page_title="Policy-Control Matching", layout="wide")
     st.title("Policy to Control Matching")
@@ -144,24 +178,38 @@ def main():
 
     col1, col2 = st.columns(2)
     with col1:
-        policy_file = st.file_uploader("Upload Policy File (CSV with policy, standard_name, statement)", type=["csv"])
+        policy_file = st.file_uploader(
+            "Upload Policy File (CSV or Excel with policy, standard_name, statement)",
+            type=["csv", "xls", "xlsx"],
+        )
     with col2:
         control_file = st.file_uploader(
-            "Upload Control File (CSV with ID, description, status, name)", type=["csv"]
+            "Upload Control File (CSV or Excel with ID, description, status, name)",
+            type=["csv", "xls", "xlsx"],
         )
 
     policy_df = None
     control_df = None
 
     if policy_file:
-        policy_df = pd.read_csv(policy_file)
-        st.subheader("Policy File Preview")
-        st.dataframe(policy_df.head())
+        try:
+            policy_df = _load_table(policy_file, {"policy", "standard_name", "statement"}, "Policy")
+        except ValueError as exc:  # pragma: no cover - user feedback path
+            st.error(str(exc))
+        else:
+            st.subheader("Policy File Preview")
+            st.dataframe(policy_df.head())
 
     if control_file:
-        control_df = pd.read_csv(control_file)
-        st.subheader("Control File Preview")
-        st.dataframe(control_df.head())
+        try:
+            control_df = _load_table(
+                control_file, {"ID", "description", "status", "name"}, "Control"
+            )
+        except ValueError as exc:  # pragma: no cover - user feedback path
+            st.error(str(exc))
+        else:
+            st.subheader("Control File Preview")
+            st.dataframe(control_df.head())
 
     st.markdown("---")
 
