@@ -3,5 +3,3 @@ pandas
 numpy
 mistralai
 requests
-openpyxl
-xlrd==1.2.0

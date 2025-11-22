@@ -5,50 +5,22 @@ from __future__ import annotations
 import os
 from typing import List, Tuple
 
-import requests
-
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 
-LLM_API_URL = "https://your-llm-endpoint/v1/chat/completions"
-LLM_API_KEY = "your-llm-api-key"
-MODEL_NAME = "mistral-large"
+# Placeholder helper for future LLM integration.
+def call_llm(text: str) -> str:
+    """Call a self-hosted Mistral LLM.
 
-
-def call_llm(text: str) -> dict:
-    """Call a self-hosted Mistral LLM with hard-coded configuration.
-
-    Update `LLM_API_URL`, `LLM_API_KEY`, and `MODEL_NAME` with your deployment
-    details. The function sends a chat-style request and returns the full JSON
-    response payload so callers can reuse the content for embeddings or other
-    downstream logic.
+    This function is intentionally left as a placeholder. Replace the TODO section
+    with logic to call your self-hosted Mistral deployment with the desired model
+    and parameters.
     """
 
-    headers = {
-        "Authorization": f"Bearer {LLM_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": MODEL_NAME,
-        "messages": [{"role": "user", "content": text}],
-        "temperature": 0.2,
-    }
-
-    try:
-        response = requests.post(LLM_API_URL, json=payload, headers=headers, timeout=30)
-        response.raise_for_status()
-    except requests.RequestException as exc:  # pragma: no cover - runtime safeguard
-        raise RuntimeError(f"LLM request failed: {exc}") from exc
-
-    try:
-        data = response.json()
-        # Return the full JSON payload so callers can inspect metadata or
-        # re-use the generated content for embedding logic.
-        return data
-    except (KeyError, IndexError, TypeError) as exc:  # pragma: no cover - defensive
-        raise RuntimeError("Unexpected LLM response format") from exc
+    # TODO: Implement call to self-hosted Mistral LLM endpoint.
+    raise NotImplementedError("call_llm is not implemented. Provide your Mistral endpoint logic here.")
 
 
 def _require_mistral_client():
@@ -154,26 +126,6 @@ def find_best_matches(
     return merged, has_matches
 
 
-def _load_uploaded_table(uploaded_file) -> pd.DataFrame:
-    """Load a CSV or Excel file uploaded via Streamlit."""
-
-    if uploaded_file is None:
-        raise ValueError("No file provided")
-
-    filename = uploaded_file.name.lower()
-    try:
-        if filename.endswith(".csv"):
-            return pd.read_csv(uploaded_file)
-        if filename.endswith(".xlsx"):
-            return pd.read_excel(uploaded_file, engine="openpyxl")
-        if filename.endswith(".xls"):
-            return pd.read_excel(uploaded_file, engine="xlrd")
-    except Exception as exc:  # pragma: no cover - user feedback path
-        raise ValueError(f"Failed to read {uploaded_file.name}: {exc}") from exc
-
-    raise ValueError("Unsupported file type. Please upload CSV or Excel files.")
-
-
 def main():
     st.set_page_config(page_title="Policy-Control Matching", layout="wide")
     st.title("Policy to Control Matching")
@@ -192,34 +144,24 @@ def main():
 
     col1, col2 = st.columns(2)
     with col1:
-        policy_file = st.file_uploader(
-            "Upload Policy File (CSV or Excel with policy, standard_name, statement)",
-            type=["csv", "xlsx", "xls"],
-        )
+        policy_file = st.file_uploader("Upload Policy File (CSV with policy, standard_name, statement)", type=["csv"])
     with col2:
         control_file = st.file_uploader(
-            "Upload Control File (CSV or Excel with ID, description, status, name)",
-            type=["csv", "xlsx", "xls"],
+            "Upload Control File (CSV with ID, description, status, name)", type=["csv"]
         )
 
     policy_df = None
     control_df = None
 
     if policy_file:
-        try:
-            policy_df = _load_uploaded_table(policy_file)
-            st.subheader("Policy File Preview")
-            st.dataframe(policy_df.head())
-        except Exception as exc:  # pragma: no cover - user feedback path
-            st.error(str(exc))
+        policy_df = pd.read_csv(policy_file)
+        st.subheader("Policy File Preview")
+        st.dataframe(policy_df.head())
 
     if control_file:
-        try:
-            control_df = _load_uploaded_table(control_file)
-            st.subheader("Control File Preview")
-            st.dataframe(control_df.head())
-        except Exception as exc:  # pragma: no cover - user feedback path
-            st.error(str(exc))
+        control_df = pd.read_csv(control_file)
+        st.subheader("Control File Preview")
+        st.dataframe(control_df.head())
 
     st.markdown("---")
 
