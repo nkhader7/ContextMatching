@@ -12,6 +12,10 @@ This Streamlit application matches policy statements to control descriptions usi
    ```bash
    pip install -r requirements.txt
    ```
+   If a `requirements.txt` file is not present, install the packages directly:
+   ```bash
+   pip install streamlit pandas numpy mistralai
+   ```
 
 2. Configure environment variables for Mistral embeddings:
    - `MISTRAL_API_KEY` (required): API key for Mistral embeddings.
@@ -36,8 +40,8 @@ By default, Streamlit runs at http://localhost:8501.
 4. View previews of both input files and the merged results directly in the UI.
 5. Download the merged CSV (includes best match columns `ID`, `description`, `status`, `name`, and `match_percentage`).
 
-## Mistral LLM helper
-The `call_llm(text: str) -> str` helper in `streamlit_app.py` is pre-wired to call a self-hosted Mistral-compatible chat endpoint using the hard-coded constants `LLM_API_URL`, `LLM_API_KEY`, and `MODEL_NAME`. Update these values with your deployment details before use. The helper sends the user text as a chat message and returns the model response content, raising a runtime error if the request fails or the response format is unexpected.
+## Mistral LLM placeholder
+The `call_llm(text: str) -> str` helper in `streamlit_app.py` is intentionally unimplemented. Replace the TODO with your self-hosted Mistral LLM invocation when ready.
 
 ## Troubleshooting
 - **Missing dependencies**: Ensure `mistralai`, `streamlit`, `pandas`, and `numpy` are installed.
