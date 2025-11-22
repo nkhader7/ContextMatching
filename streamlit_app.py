@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Set, Tuple
+from typing import List, Set, Tuple
 
 import pandas as pd
 import requests
