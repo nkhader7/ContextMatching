@@ -5,50 +5,22 @@ from __future__ import annotations
 import os
 from typing import List, Tuple
 
-import requests
-
 import numpy as np
 import pandas as pd
 import streamlit as st
 
 
-LLM_API_URL = "https://your-llm-endpoint/v1/chat/completions"
-LLM_API_KEY = "your-llm-api-key"
-MODEL_NAME = "mistral-large"
+# Placeholder helper for future LLM integration.
+def call_llm(text: str) -> str:
+    """Call a self-hosted Mistral LLM.
 
-
-def call_llm(text: str) -> dict:
-    """Call a self-hosted Mistral LLM with hard-coded configuration.
-
-    Update `LLM_API_URL`, `LLM_API_KEY`, and `MODEL_NAME` with your deployment
-    details. The function sends a chat-style request and returns the full JSON
-    response payload so callers can reuse the content for embeddings or other
-    downstream logic.
+    This function is intentionally left as a placeholder. Replace the TODO section
+    with logic to call your self-hosted Mistral deployment with the desired model
+    and parameters.
     """
 
-    headers = {
-        "Authorization": f"Bearer {LLM_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": MODEL_NAME,
-        "messages": [{"role": "user", "content": text}],
-        "temperature": 0.2,
-    }
-
-    try:
-        response = requests.post(LLM_API_URL, json=payload, headers=headers, timeout=30)
-        response.raise_for_status()
-    except requests.RequestException as exc:  # pragma: no cover - runtime safeguard
-        raise RuntimeError(f"LLM request failed: {exc}") from exc
-
-    try:
-        data = response.json()
-        # Return the full JSON payload so callers can inspect metadata or
-        # re-use the generated content for embedding logic.
-        return data
-    except (KeyError, IndexError, TypeError) as exc:  # pragma: no cover - defensive
-        raise RuntimeError("Unexpected LLM response format") from exc
+    # TODO: Implement call to self-hosted Mistral LLM endpoint.
+    raise NotImplementedError("call_llm is not implemented. Provide your Mistral endpoint logic here.")
 
 
 def _require_mistral_client():
