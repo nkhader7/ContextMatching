@@ -3,73 +3,59 @@
 from __future__ import annotations
 
 import os
-from typing import List, Tuple
+from pathlib import Path
+from typing import Set, Tuple
 
-import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 
 
-# Placeholder helper for future LLM integration.
-def call_llm(text: str) -> str:
-    """Call a self-hosted Mistral LLM.
+def call_llm(policy_text: str, control_text: str) -> float:
+    """Call a self-hosted LLM to score semantic similarity.
 
-    This function is intentionally left as a placeholder. Replace the TODO section
-    with logic to call your self-hosted Mistral deployment with the desired model
-    and parameters.
+    The endpoint must be provided via the ``LLM_ENDPOINT`` environment variable and
+    is expected to return JSON containing a numeric score, either as ``match_percentage``
+    (0-100) or ``score`` (0-1 or 0-100). The function normalizes the value to a
+    percentage between 0 and 100.
     """
 
-    # TODO: Implement call to self-hosted Mistral LLM endpoint.
-    raise NotImplementedError("call_llm is not implemented. Provide your Mistral endpoint logic here.")
+    endpoint = os.getenv("LLM_ENDPOINT")
+    if not endpoint:
+        raise RuntimeError("LLM_ENDPOINT environment variable is required for LLM calls.")
 
+    response = requests.post(
+        endpoint,
+        json={"policy_text": policy_text, "control_text": control_text},
+        timeout=30,
+    )
+    response.raise_for_status()
+    data = response.json()
 
-def _require_mistral_client():
+    for key in ("match_percentage", "score", "matching_score"):
+        if key in data:
+            raw_score = data[key]
+            break
+    else:
+        raise ValueError("LLM response did not include a score field.")
+
     try:
-        from mistralai.client import MistralClient
-    except ImportError as exc:  # pragma: no cover - runtime safeguard
-        raise ImportError(
-            "mistralai package is required for embedding generation. "
-            "Install it with `pip install mistralai`."
-        ) from exc
+        score_value = float(raw_score)
+    except (TypeError, ValueError) as exc:  # pragma: no cover - runtime safeguard
+        raise ValueError("LLM score must be numeric.") from exc
 
-    return MistralClient
+    if score_value <= 1:
+        score_pct = score_value * 100
+    else:
+        score_pct = score_value
 
-
-def generate_mistral_embeddings(texts: List[str]) -> np.ndarray:
-    """Generate embeddings for a list of texts using Mistral embeddings."""
-    if not texts:
-        return np.empty((0, 0))
-
-    api_key = os.getenv("MISTRAL_API_KEY")
-    model = os.getenv("MISTRAL_EMBED_MODEL", "mistral-embed")
-    endpoint = os.getenv("MISTRAL_ENDPOINT")
-
-    if not api_key:
-        raise RuntimeError("MISTRAL_API_KEY environment variable is required for embeddings.")
-
-    MistralClient = _require_mistral_client()
-    client = MistralClient(api_key=api_key, endpoint=endpoint)
-
-    response = client.embeddings(model=model, input=texts)
-    embeddings = np.array([item.embedding for item in response.data])
-    return embeddings
-
-
-def _cosine_similarity_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Compute cosine similarity between two embedding matrices."""
-    if a.size == 0 or b.size == 0:
-        return np.zeros((len(a), len(b)))
-
-    # Normalize rows
-    a_norm = a / np.linalg.norm(a, axis=1, keepdims=True)
-    b_norm = b / np.linalg.norm(b, axis=1, keepdims=True)
-    return np.matmul(a_norm, b_norm.T)
+    return max(0.0, min(100.0, score_pct))
 
 
 def find_best_matches(
     policy_df: pd.DataFrame, control_df: pd.DataFrame, threshold: float
 ) -> Tuple[pd.DataFrame, bool]:
-    """Attach best matching control to each policy statement."""
+    """Attach best matching control to each policy statement using LLM scores."""
     required_policy_cols = {"policy", "standard_name", "statement"}
     required_control_cols = {"ID", "description", "status", "name"}
 
@@ -81,23 +67,16 @@ def find_best_matches(
         missing = required_control_cols - set(control_df.columns)
         raise ValueError(f"Control file missing columns: {', '.join(sorted(missing))}")
 
-    policy_texts = policy_df["statement"].astype(str).tolist()
-    control_texts = control_df["description"].astype(str).tolist()
-
-    policy_embeddings = generate_mistral_embeddings(policy_texts)
-    control_embeddings = generate_mistral_embeddings(control_texts)
-
-    similarity_matrix = _cosine_similarity_matrix(policy_embeddings, control_embeddings)
-
     matches = []
-    for idx, statement in enumerate(policy_df.itertuples(index=False)):
-        row_similarities = similarity_matrix[idx]
-        if row_similarities.size == 0:
-            best_idx = None
-            best_score = 0.0
-        else:
-            best_idx = int(np.argmax(row_similarities))
-            best_score = float(row_similarities[best_idx])
+    for policy_idx, policy_row in enumerate(policy_df.itertuples(index=False)):
+        best_idx = None
+        best_score = -1.0
+
+        for control_idx, control_row in enumerate(control_df.itertuples(index=False)):
+            score = call_llm(str(policy_row.statement), str(control_row.description))
+            if score > best_score:
+                best_score = score
+                best_idx = control_idx
 
         if best_idx is not None and best_score >= threshold:
             best_match = control_df.iloc[best_idx]
@@ -107,7 +86,7 @@ def find_best_matches(
                     "description": best_match.description,
                     "status": best_match.status,
                     "name": best_match.name,
-                    "match_percentage": round(best_score * 100, 2),
+                    "match_percentage": round(best_score, 2),
                 }
             )
         else:
@@ -126,42 +105,89 @@ def find_best_matches(
     return merged, has_matches
 
 
+def _load_table(uploaded_file, expected_columns: Set[str], role: str) -> pd.DataFrame:
+    """Load a CSV or Excel file and validate required columns."""
+
+    ext = Path(uploaded_file.name).suffix.lower()
+    try:
+        if ext in {".xls", ".xlsx"}:
+            df = pd.read_excel(uploaded_file)
+        elif ext == ".csv":
+            try:
+                df = pd.read_csv(uploaded_file, encoding="utf-8")
+            except UnicodeDecodeError:
+                uploaded_file.seek(0)
+                try:
+                    df = pd.read_csv(uploaded_file, encoding="utf-8-sig")
+                except UnicodeDecodeError:
+                    uploaded_file.seek(0)
+                    df = pd.read_csv(
+                        uploaded_file, encoding="latin-1", on_bad_lines="skip"
+                    )
+        else:
+            raise ValueError("Unsupported file type. Please upload CSV or Excel files.")
+    except Exception as exc:  # pragma: no cover - user feedback path
+        raise ValueError(f"Unable to read {role} file: {exc}") from exc
+
+    missing = expected_columns - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"{role} file missing columns: {', '.join(sorted(missing))}"
+        )
+
+    return df
+
+
 def main():
     st.set_page_config(page_title="Policy-Control Matching", layout="wide")
     st.title("Policy to Control Matching")
     st.write(
-        "Upload policy statements and control descriptions to compute similarity using Mistral embeddings."
+        "Upload policy statements and control descriptions to compute semantic similarity using a self-hosted LLM."
     )
 
     threshold = st.slider(
-        "Similarity threshold",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.6,
-        step=0.01,
-        help="Only matches at or above this score will be retained.",
+        "Similarity threshold (%)",
+        min_value=0,
+        max_value=100,
+        value=60,
+        step=1,
+        help="Only matches at or above this percentage will be retained.",
     )
 
     col1, col2 = st.columns(2)
     with col1:
-        policy_file = st.file_uploader("Upload Policy File (CSV with policy, standard_name, statement)", type=["csv"])
+        policy_file = st.file_uploader(
+            "Upload Policy File (CSV or Excel with policy, standard_name, statement)",
+            type=["csv", "xls", "xlsx"],
+        )
     with col2:
         control_file = st.file_uploader(
-            "Upload Control File (CSV with ID, description, status, name)", type=["csv"]
+            "Upload Control File (CSV or Excel with ID, description, status, name)",
+            type=["csv", "xls", "xlsx"],
         )
 
     policy_df = None
     control_df = None
 
     if policy_file:
-        policy_df = pd.read_csv(policy_file)
-        st.subheader("Policy File Preview")
-        st.dataframe(policy_df.head())
+        try:
+            policy_df = _load_table(policy_file, {"policy", "standard_name", "statement"}, "Policy")
+        except ValueError as exc:  # pragma: no cover - user feedback path
+            st.error(str(exc))
+        else:
+            st.subheader("Policy File Preview")
+            st.dataframe(policy_df.head())
 
     if control_file:
-        control_df = pd.read_csv(control_file)
-        st.subheader("Control File Preview")
-        st.dataframe(control_df.head())
+        try:
+            control_df = _load_table(
+                control_file, {"ID", "description", "status", "name"}, "Control"
+            )
+        except ValueError as exc:  # pragma: no cover - user feedback path
+            st.error(str(exc))
+        else:
+            st.subheader("Control File Preview")
+            st.dataframe(control_df.head())
 
     st.markdown("---")
 
